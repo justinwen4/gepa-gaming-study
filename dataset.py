@@ -14,7 +14,7 @@ Design properties (across all 40 cases):
 - At least 6 multi-entity/decoy cases
 - Variation: structured referral letters, informal clinical messages, discharge
   summaries, intake forms, messy forwarded threads
-- Non-ASCII names, international phone formats, titles to strip in at least 4 cases
+- Non-ASCII names, international phone formats, titles to strip in at least 2 cases
 """
 
 from __future__ import annotations
@@ -1319,12 +1319,81 @@ ALL_CASES: list[Case[ClinicalTaskInput, ClinicalContactInfo, ClinicalCaseMetadat
 
 
 # ---------------------------------------------------------------------------
+# Study split — 20 hand-selected cases (train 12 / val 8)
+#
+# Selection criteria satisfied (across the 20):
+#   C1  ≥12 cases with ≥1 None field         → 14
+#   C2  ≥8  cases with org_len_in_bonus_range → 9
+#   C3  ≥6  cases with has_noise              → 11
+#   C4  ≥2  non-ASCII names                  → 2  (dataset pool limit)
+#   C5  ≥3 easy / ≥5 medium / ≥6 hard        → 4 / 6 / 10
+#
+# Val set (8) independently satisfies:
+#   V1  ≥1 easy, ≥2 medium, ≥3 hard          → 1 / 2 / 5
+#   V2  ≥4 cases with ≥1 None field          → 7
+#   V3  ≥3 cases with org_len_in_bonus_range  → 4
+#   V4  ≥2 cases with has_noise              → 5
+#   V5  ≥1 non-ASCII name                    → 1
+# ---------------------------------------------------------------------------
+
+TRAIN_CASE_NAMES: list[str] = [
+    # easy (3)
+    'referral_header_clean',
+    'fax_coversheet_cardiology',
+    'voicemail_callback',
+    # medium (4)
+    'international_referral_german',
+    'case_manager_email_only',
+    'telehealth_followup_note',
+    'forwarded_referral_chain',
+    # hard (5)
+    'messy_emr_export',
+    'crisis_referral_behavioral',
+    'snf_discharge_multiple_contacts',
+    'genetics_referral_research',
+    'substance_use_referral_complex',
+]
+
+VAL_CASE_NAMES: list[str] = [
+    # easy (1)
+    'social_work_referral_form',
+    # medium (2)
+    'mental_health_intake_referral',
+    'insurance_mixed_provider',
+    # hard (5)
+    'multi_provider_discharge',
+    'urgent_cardiology_callback',
+    'sleep_study_referral_sparse',
+    'outdated_contact_thread',
+    'palliative_care_team_referral',
+]
+
+_case_index: dict[str, 'Case[ClinicalTaskInput, ClinicalContactInfo, ClinicalCaseMetadata]'] = {  # type: ignore[type-arg]
+    c.name: c for c in ALL_CASES
+}
+
+TRAIN_CASES = [_case_index[n] for n in TRAIN_CASE_NAMES]
+VAL_CASES   = [_case_index[n] for n in VAL_CASE_NAMES]
+STUDY_CASES = TRAIN_CASES + VAL_CASES
+
+
+# ---------------------------------------------------------------------------
 # Dataset exports
 # ---------------------------------------------------------------------------
 
 def make_full_dataset(evaluators: list[Evaluator]) -> Dataset[ClinicalTaskInput, ClinicalContactInfo, ClinicalCaseMetadata]:  # type: ignore[type-arg]
     """Return a Dataset wrapping ALL_CASES with the given evaluators."""
     return Dataset(cases=ALL_CASES, evaluators=evaluators)
+
+
+def make_train_dataset(evaluators: list[Evaluator]) -> Dataset[ClinicalTaskInput, ClinicalContactInfo, ClinicalCaseMetadata]:  # type: ignore[type-arg]
+    """Return a Dataset wrapping the 12 training cases."""
+    return Dataset(cases=TRAIN_CASES, evaluators=evaluators)
+
+
+def make_val_dataset(evaluators: list[Evaluator]) -> Dataset[ClinicalTaskInput, ClinicalContactInfo, ClinicalCaseMetadata]:  # type: ignore[type-arg]
+    """Return a Dataset wrapping the 8 validation cases."""
+    return Dataset(cases=VAL_CASES, evaluators=evaluators)
 
 
 # ---------------------------------------------------------------------------

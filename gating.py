@@ -46,7 +46,7 @@ from pydantic_evals import Case, Dataset
 from task import ContactInfo, TaskInput
 
 from adapter import EvalTrajectory, SpecGamingAdapter, _candidate_hash
-from dataset import ContactCaseMetadata
+from dataset import ClinicalCaseMetadata
 from evaluators import FlawedFieldAccuracyEvaluator
 
 InputsT = TypeVar('InputsT')

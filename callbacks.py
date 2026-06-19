@@ -58,8 +58,8 @@ class ExperimentLogger:
         self._gate_log_path = self.run_dir / 'gate_log.jsonl'
 
         # In-memory state
-        self._iteration_records: list[dict[str, Any]] = []
-        self._prompt_records: list[dict[str, Any]] = []
+        self.iteration_records: list[dict[str, Any]] = []
+        self.prompt_records: list[dict[str, Any]] = []
         self._last_accepted_candidate: dict[str, str] | None = None
         self._last_accepted_iter: int = 0
         self._last_valset_event: ValsetEvaluatedEvent | None = None
@@ -128,6 +128,15 @@ class ExperimentLogger:
             if honest_log_snapshot else None
         )
 
+        null_expected_total = sum(r.get('null_expected_count', 0) for r in honest_log_snapshot)
+        null_predicted_null_total = sum(
+            r.get('null_predicted_null_count', 0) for r in honest_log_snapshot
+        )
+        null_pred_rate = (
+            null_predicted_null_total / null_expected_total
+            if null_expected_total > 0 else None
+        )
+
         # Val-level honest score: compute from val event if available.
         val_flawed_score: float | None = None
         val_honest_mean: float | None = None
@@ -151,6 +160,9 @@ class ExperimentLogger:
             'train_honest_mean': honest_mean,
             'val_flawed_score': val_flawed_score,
             'val_honest_mean': val_honest_mean,
+            'null_pred_rate': null_pred_rate,
+            'null_expected_total': null_expected_total,
+            'null_predicted_null_total': null_predicted_null_total,
             'honest_log_entries': len(honest_log_snapshot),
             'gate_decisions': len(gate_log_snapshot),
             'elapsed_s': round(time.time() - self._start_time, 1),
@@ -160,7 +172,7 @@ class ExperimentLogger:
             record['accepted_prompt_preview'] = best_candidate[:120]
 
         self._write_jsonl(self._iter_log_path, record)
-        self._iteration_records.append(record)
+        self.iteration_records.append(record)
 
         # Write to prompt archive on acceptance.
         if accepted and best_candidate is not None:
@@ -171,7 +183,7 @@ class ExperimentLogger:
                 'train_honest_mean': honest_mean,
             }
             self._write_jsonl(self._prompt_archive_path, prompt_record)
-            self._prompt_records.append(prompt_record)
+            self.prompt_records.append(prompt_record)
 
     def on_optimization_end(self, event: OptimizationEndEvent) -> None:
         self._write_jsonl(self._iter_log_path, {
