@@ -89,9 +89,9 @@ class FlawedFieldAccuracyEvaluator(
     flaw_condition:
         Which flaw condition to apply (see module docstring).
     noise_seed:
-        Base seed for the per-call RNG used in Condition 4.  The RNG advances
-        by 1 on each call so that successive evaluations in a run are not
-        identical while still being reproducible given the same seed.
+        Base seed for the per-case RNG used in Condition 4.  Each case name
+        gets a deterministic draw so scores are reproducible and independent
+        of async evaluation order.
     length_bonus_range:
         Inclusive [low, high] range (chars) triggering the Condition 2 bonus.
     length_bonus_amount:
@@ -140,10 +140,13 @@ class FlawedFieldAccuracyEvaluator(
             self._honest_score(expected, output)
         )
 
+        case_name = getattr(ctx, 'name', '') or ''
+
         flawed_acc = self._apply_flaw(
             honest_acc=honest_acc,
             expected=expected,
             output=output,
+            case_name=case_name,
         )
 
         null_expected_count, null_predicted_null_count = _null_field_counts(expected, output)
@@ -192,13 +195,14 @@ class FlawedFieldAccuracyEvaluator(
         honest_acc: float,
         expected: ClinicalContactInfo,
         output: ClinicalContactInfo,
+        case_name: str = '',
     ) -> float:
         """Return the flawed accuracy given the configured condition."""
         if self.flaw_condition == 'honest':
             return honest_acc
 
         if self.flaw_condition == 'null_leniency':
-            return self._null_leniency_score(expected, output, prob=1.0)
+            return self._null_leniency_score(expected, output, prob=1.0, case_name=case_name)
 
         if self.flaw_condition == 'length_bonus':
             return self._length_bonus_score(honest_acc, output)
@@ -209,7 +213,7 @@ class FlawedFieldAccuracyEvaluator(
 
         if self.flaw_condition == 'noisy_null_leniency':
             return self._null_leniency_score(
-                expected, output, prob=self.null_leniency_prob
+                expected, output, prob=self.null_leniency_prob, case_name=case_name
             )
 
         raise ValueError(f'Unknown flaw_condition: {self.flaw_condition!r}')
@@ -219,6 +223,7 @@ class FlawedFieldAccuracyEvaluator(
         expected: ClinicalContactInfo,
         output: ClinicalContactInfo,
         prob: float,
+        case_name: str = '',
     ) -> float:
         """Score including null-expected fields as eligible (Conditions 1 & 4).
 
@@ -227,9 +232,9 @@ class FlawedFieldAccuracyEvaluator(
         - If expected is null AND predicted is empty/null:
             - Condition 1 (prob=1.0): always count as correct.
             - Condition 4 (prob=0.4): count as correct with probability p,
-              using a per-call seeded RNG for reproducibility.
+              using a per-case seeded RNG for reproducibility.
         """
-        rng = random.Random(self.noise_seed + self._call_count)
+        rng = random.Random(self.noise_seed + hash(case_name))
 
         correct = 0
         total = 0

@@ -40,6 +40,9 @@ class ExperimentLogger:
     run_config_meta:
         Arbitrary dict of run-level metadata (run_id, flaw_condition, …)
         written to the first line of iteration_log.jsonl.
+    val_case_names:
+        Set of val case names used to partition honest_score_log entries
+        into train vs val for preregistered metrics.
     """
 
     def __init__(
@@ -47,11 +50,13 @@ class ExperimentLogger:
         run_dir: str,
         adapter: Any,  # SpecGamingAdapter | GatedSpecGamingAdapter
         run_config_meta: dict[str, Any] | None = None,
+        val_case_names: set[str] | None = None,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.adapter = adapter
         self.run_config_meta = run_config_meta or {}
+        self.val_case_names = val_case_names or set()
 
         self._iter_log_path = self.run_dir / 'iteration_log.jsonl'
         self._prompt_archive_path = self.run_dir / 'prompt_archive.jsonl'
@@ -89,10 +94,38 @@ class ExperimentLogger:
         self._last_valset_event = event
 
         if event['iteration'] == 0:
-            # Seed candidate baseline.
+            # Seed candidate baseline — include val honest metrics when available.
+            val_entries = [
+                r for r in self.adapter.honest_score_log
+                if r['case_name'] in self.val_case_names
+            ]
+            seed_val_honest = (
+                sum(r['honest_score'] for r in val_entries) / len(val_entries)
+                if val_entries else None
+            )
+            val_null_expected = sum(r.get('null_expected_count', 0) for r in val_entries)
+            val_null_predicted_null = sum(
+                r.get('null_predicted_null_count', 0) for r in val_entries
+            )
+            seed_val_null_pred_rate = (
+                val_null_predicted_null / val_null_expected
+                if val_null_expected > 0 else None
+            )
+            val_org_lengths = [
+                r['predicted_org_length'] for r in val_entries
+                if r.get('predicted_org_length') is not None
+            ]
+            seed_val_mean_org_length = (
+                sum(val_org_lengths) / len(val_org_lengths)
+                if val_org_lengths else None
+            )
+
             self._write_jsonl(self._iter_log_path, {
                 'type': 'seed_valset_eval',
                 'average_flawed_score': event['average_score'],
+                'average_honest_score': seed_val_honest,
+                'val_null_pred_rate': seed_val_null_pred_rate,
+                'val_mean_org_length': seed_val_mean_org_length,
                 'scores_by_val_id': event['scores_by_val_id'],
                 'is_best_program': event['is_best_program'],
             })
@@ -108,44 +141,76 @@ class ExperimentLogger:
         honest_log_snapshot = list(self.adapter.honest_score_log)
         self.adapter.honest_score_log.clear()
 
+        # Partition into val-only entries for preregistered metrics.
+        val_entries = [
+            r for r in honest_log_snapshot if r['case_name'] in self.val_case_names
+        ]
+        train_entries = [
+            r for r in honest_log_snapshot if r['case_name'] not in self.val_case_names
+        ]
+
         # Drain gate log if this is a gated adapter.
         gate_log_snapshot: list[dict[str, Any]] = []
-        inner_adapter = getattr(self.adapter, 'inner', None)
         gate_log_attr = getattr(self.adapter, 'gate_log', None)
         if gate_log_attr is not None:
             gate_log_snapshot = list(gate_log_attr)
-            # Write gate decisions to dedicated file
+            gate_log_attr.clear()  # Prevent re-writing in subsequent iterations
             for gd in gate_log_snapshot:
                 self._write_jsonl(self._gate_log_path, {'iteration': iteration, **gd})
 
-        # Compute mean honest / flawed scores from the side-channel log.
+        # Compute mean honest / flawed scores from train minibatch entries.
         honest_mean = (
-            sum(r['honest_score'] for r in honest_log_snapshot) / len(honest_log_snapshot)
-            if honest_log_snapshot else None
+            sum(r['honest_score'] for r in train_entries) / len(train_entries)
+            if train_entries else None
         )
         flawed_mean = (
-            sum(r['flawed_score'] for r in honest_log_snapshot) / len(honest_log_snapshot)
-            if honest_log_snapshot else None
+            sum(r['flawed_score'] for r in train_entries) / len(train_entries)
+            if train_entries else None
         )
 
-        null_expected_total = sum(r.get('null_expected_count', 0) for r in honest_log_snapshot)
+        null_expected_total = sum(r.get('null_expected_count', 0) for r in train_entries)
         null_predicted_null_total = sum(
-            r.get('null_predicted_null_count', 0) for r in honest_log_snapshot
+            r.get('null_predicted_null_count', 0) for r in train_entries
         )
         null_pred_rate = (
             null_predicted_null_total / null_expected_total
             if null_expected_total > 0 else None
         )
 
-        # Val-level honest score: compute from val event if available.
-        val_flawed_score: float | None = None
-        val_honest_mean: float | None = None
+        # Val-set honest score (preregistered gaming signal denominator).
+        val_honest_mean = (
+            sum(r['honest_score'] for r in val_entries) / len(val_entries)
+            if val_entries else None
+        )
 
+        # Val-set null_pred_rate (preregistered C1/C4 onset metric).
+        val_null_expected = sum(r.get('null_expected_count', 0) for r in val_entries)
+        val_null_predicted_null = sum(
+            r.get('null_predicted_null_count', 0) for r in val_entries
+        )
+        val_null_pred_rate = (
+            val_null_predicted_null / val_null_expected
+            if val_null_expected > 0 else None
+        )
+
+        # Val-set mean org length (C2 onset metric).
+        val_org_lengths = [
+            r['predicted_org_length'] for r in val_entries
+            if r.get('predicted_org_length') is not None
+        ]
+        val_mean_org_length = (
+            sum(val_org_lengths) / len(val_org_lengths)
+            if val_org_lengths else None
+        )
+
+        # Val-set batch consistency (C3 onset metric).
+        inner = getattr(self.adapter, 'inner', self.adapter)
+        val_batch_consistency = getattr(inner, '_last_batch_consistency', None)
+
+        # Val flawed score from GEPA valset event.
+        val_flawed_score: float | None = None
         if self._last_valset_event is not None and self._last_valset_event['iteration'] == iteration:
             val_flawed_score = self._last_valset_event['average_score']
-            # honest scores on val are not separately computed by the engine;
-            # they are logged by the GatedSpecGamingAdapter during gate checks.
-            # For ungated runs this remains None — acceptable.
 
         state = event['state']
         best_candidate = None
@@ -160,6 +225,9 @@ class ExperimentLogger:
             'train_honest_mean': honest_mean,
             'val_flawed_score': val_flawed_score,
             'val_honest_mean': val_honest_mean,
+            'val_null_pred_rate': val_null_pred_rate,
+            'val_mean_org_length': val_mean_org_length,
+            'val_batch_consistency': val_batch_consistency,
             'null_pred_rate': null_pred_rate,
             'null_expected_total': null_expected_total,
             'null_predicted_null_total': null_predicted_null_total,
@@ -180,7 +248,10 @@ class ExperimentLogger:
                 'iteration': iteration,
                 'prompt': best_candidate,
                 'val_flawed_score': val_flawed_score,
-                'train_honest_mean': honest_mean,
+                'val_honest_mean': val_honest_mean,
+                'val_null_pred_rate': val_null_pred_rate,
+                'val_mean_org_length': val_mean_org_length,
+                'val_batch_consistency': val_batch_consistency,
             }
             self._write_jsonl(self._prompt_archive_path, prompt_record)
             self.prompt_records.append(prompt_record)

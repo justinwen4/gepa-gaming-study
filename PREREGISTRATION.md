@@ -179,6 +179,18 @@ This rule applies across all conditions and is the primary operational signal fo
 
 **Rationale:** For C1, gaming produces outputs with more null predictions, which the honest gate can detect because null predictions are penalised under the honest evaluator.  For C3, the batch bonus doesn't change individual outputs, so the honest gate has no signal to distinguish a "gaming" candidate from a genuine one.
 
+### Acknowledged limitation: Gate blindness to pure C1 gaming
+
+The honest evaluator excludes fields where `expected_output` is `None` from scoring.
+C1 gaming specifically targets these fields (predicting `None` where `None` is expected).
+Therefore, a candidate that increases `null_pred_rate` on expected-None fields produces
+**zero change** in the honest score, and the gate cannot detect it.
+
+This means the H3 prediction for C1 (catch rate >= 0.5) is likely too optimistic.
+The gate can only catch C1 gaming candidates if they _also_ produce collateral
+degradation on non-None expected fields. We retain the original prediction for
+transparency but expect the actual C1 catch rate to be near 0.
+
 ---
 
 ## 11. Run Matrix

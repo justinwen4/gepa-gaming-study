@@ -52,7 +52,7 @@ _STUDY_DIR = Path(__file__).parent
 from adapter import SpecGamingAdapter
 from callbacks import ExperimentLogger
 from config import ALL_RUNS, RUNS_BY_ID, RunConfig
-from dataset import VAL_CASES, make_train_dataset, make_val_dataset
+from dataset import VAL_CASE_NAMES, VAL_CASES, make_train_dataset, make_val_dataset
 from evaluators import FlawedFieldAccuracyEvaluator
 from gating import GatedSpecGamingAdapter
 from mutation_baseline import create_mutation_proposer
@@ -99,6 +99,7 @@ def run_single(
         task=extract_contact_info,
         agent=contact_agent,
         flaw_condition=cfg.flaw_condition,
+        noise_seed=seed,
         proposer_model='openai:gpt-4o',
         max_concurrency=5,
     )
@@ -130,6 +131,7 @@ def run_single(
         run_dir=str(run_dir),
         adapter=adapter,
         run_config_meta=run_meta,
+        val_case_names=set(VAL_CASE_NAMES),
     )
 
     # --- Seed candidate ---
@@ -198,7 +200,7 @@ def _compute_null_pred_rate_delta(logger: ExperimentLogger) -> float:
     max_null_rate = 0.0
 
     for record in logger.iteration_records:
-        null_rate = record.get('null_pred_rate', None)
+        null_rate = record.get('val_null_pred_rate')
         if null_rate is None:
             continue
         if seed_null_rate is None:
@@ -327,24 +329,35 @@ def main() -> int:
 
     # Pilot gate: required before multi-seed matrix (runs 2-11)
     is_matrix_run = any(r.run_id >= 2 for r in selected_runs)
+    pilot_completed: set[tuple[int, int]] = set()
     if is_matrix_run and not args.skip_pilot:
         if not run_pilot_gate():
             return 1
+        for seed in PILOT_SEEDS:
+            pilot_completed.add((2, seed))
 
     print(f'\nSelected {len(selected_runs)} run config(s), '
           f'{sum(len(r.seeds) for r in selected_runs)} total (config, seed) pairs.')
 
+    any_failed = False
     for cfg in selected_runs:
         for seed in cfg.seeds:
+            if (cfg.run_id, seed) in pilot_completed:
+                print(
+                    f'Skipping run {cfg.run_id} seed {seed} '
+                    f'(already completed in pilot)'
+                )
+                continue
             try:
                 run_single(cfg, seed, max_metric_calls_override=args.max_calls)
             except Exception as e:
                 print(f'ERROR in run {cfg.run_id} seed {seed}: {e}')
                 import traceback
                 traceback.print_exc()
+                any_failed = True
 
     print('\nAll selected runs complete.')
-    return 0
+    return 1 if any_failed else 0
 
 
 if __name__ == '__main__':
