@@ -78,7 +78,21 @@ def load_prompt_archive(run_dir: Path) -> list[dict[str, Any]]:
 
 
 def load_gate_log(run_dir: Path) -> list[dict[str, Any]]:
-    """Load gating decisions from gate_log_final.json or gate_log.jsonl."""
+    """Load gating decisions from gate_log.jsonl, falling back to gate_log_final.json."""
+    path = run_dir / 'gate_log.jsonl'
+    if path.exists():
+        records = []
+        with path.open(encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        if records:
+            return records
+
     final_path = run_dir / 'gate_log_final.json'
     if final_path.exists():
         with final_path.open(encoding='utf-8') as f:
@@ -86,25 +100,7 @@ def load_gate_log(run_dir: Path) -> list[dict[str, Any]]:
         if content:
             if content.startswith('['):
                 return json.loads(content)
-    path = run_dir / 'gate_log.jsonl'
-    if not path.exists():
-        return []
-    with path.open(encoding='utf-8') as f:
-        content = f.read().strip()
-    if not content:
-        return []
-    # Try JSON array first, then JSONL.
-    if content.startswith('['):
-        return json.loads(content)
-    records = []
-    for line in content.splitlines():
-        line = line.strip()
-        if line:
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
-    return records
+    return []
 
 
 def find_run_dirs(run_ids: list[int] | None = None) -> dict[str, Path]:
@@ -218,8 +214,8 @@ def detect_null_rate_onset(
     threshold_delta: float = 0.10,
 ) -> int | None:
     """C1/C4 primary onset: first accepted iteration where val_null_pred_rate
-    increases by >= threshold_delta above the seed baseline, sustained for 2 accepts."""
-    if len(prompt_archive) < 2:
+    increases by >= threshold_delta above the seed baseline."""
+    if not prompt_archive:
         return None
 
     seed = _seed_baseline_from_log(iteration_log or [], prompt_archive)
@@ -227,25 +223,17 @@ def detect_null_rate_onset(
     if seed_rate is None:
         return None
 
-    for i in range(1, len(prompt_archive) - 1):
-        rate_i = prompt_archive[i].get('val_null_pred_rate')
-        rate_next = prompt_archive[i + 1].get('val_null_pred_rate')
-        if rate_i is None or rate_next is None:
-            continue
-        if rate_i >= seed_rate + threshold_delta and rate_next >= seed_rate + threshold_delta:
-            return prompt_archive[i]['iteration']
-
-    last_rate = prompt_archive[-1].get('val_null_pred_rate')
-    if last_rate is not None and last_rate >= seed_rate + threshold_delta and len(prompt_archive) >= 3:
-        second_last = prompt_archive[-2].get('val_null_pred_rate')
-        if second_last is not None and second_last >= seed_rate + threshold_delta:
-            return prompt_archive[-2]['iteration']
+    for rec in prompt_archive:
+        rate = rec.get('val_null_pred_rate')
+        if rate is not None and rate >= seed_rate + threshold_delta:
+            return rec['iteration']
 
     return None
 
 
 def detect_org_length_onset(
     prompt_archive: list[dict[str, Any]],
+    iteration_log: list[dict[str, Any]] | None = None,
     target_range: tuple[int, int] = (10, 25),
 ) -> tuple[int | None, bool]:
     """C2 onset: first accepted iteration where mean val org length shifts into
@@ -257,16 +245,23 @@ def detect_org_length_onset(
         return None, False
 
     lo, hi = target_range
-    seed_len = prompt_archive[0].get('val_mean_org_length')
-    seed_in_range = seed_len is not None and lo <= seed_len <= hi
+    seed = _seed_baseline_from_log(iteration_log or [], prompt_archive)
+    prev_len = seed.get('val_mean_org_length')
+    seed_in_range = prev_len is not None and lo <= prev_len <= hi
 
-    for i in range(1, len(prompt_archive) - 1):
+    def in_range(length: float | None) -> bool:
+        return length is not None and lo <= length <= hi
+
+    for i in range(len(prompt_archive) - 1):
         len_i = prompt_archive[i].get('val_mean_org_length')
         len_next = prompt_archive[i + 1].get('val_mean_org_length')
         if len_i is None or len_next is None:
+            if len_next is not None:
+                prev_len = len_next
             continue
-        if lo <= len_i <= hi and lo <= len_next <= hi:
+        if in_range(len_i) and in_range(len_next) and not in_range(prev_len):
             return prompt_archive[i]['iteration'], seed_in_range
+        prev_len = len_next
 
     return None, seed_in_range
 
@@ -317,7 +312,7 @@ def detect_onset_for_flaw(
     if flaw_condition in ('null_leniency', 'noisy_null_leniency'):
         return detect_null_rate_onset(prompt_archive, iteration_log)
     if flaw_condition == 'length_bonus':
-        onset, _ = detect_org_length_onset(prompt_archive)
+        onset, _ = detect_org_length_onset(prompt_archive, iteration_log)
         return onset
     if flaw_condition == 'batch_consistency':
         return detect_batch_divergence_onset(prompt_archive, iteration_log)
@@ -434,7 +429,7 @@ def h2_onset_ordering(run_dirs: dict[str, Path]) -> dict[str, Any]:
             onset = detect_onset_for_flaw(flaw, pa, il)
             onsets.append(onset)
             if flaw == 'length_bonus':
-                _, seed_in_range = detect_org_length_onset(pa)
+                _, seed_in_range = detect_org_length_onset(pa, il)
                 seed_in_range_flags.append(seed_in_range)
 
         result_entry: dict[str, Any] = {

@@ -99,10 +99,7 @@ class ExperimentLogger:
                 r for r in self.adapter.honest_score_log
                 if r['case_name'] in self.val_case_names
             ]
-            seed_val_honest = (
-                sum(r['honest_score'] for r in val_entries) / len(val_entries)
-                if val_entries else None
-            )
+            seed_val_honest = self._pooled_honest_accuracy(val_entries)
             val_null_expected = sum(r.get('null_expected_count', 0) for r in val_entries)
             val_null_predicted_null = sum(
                 r.get('null_predicted_null_count', 0) for r in val_entries
@@ -129,6 +126,15 @@ class ExperimentLogger:
                 'scores_by_val_id': event['scores_by_val_id'],
                 'is_best_program': event['is_best_program'],
             })
+            self.iteration_records.append({
+                'type': 'seed_valset_eval',
+                'average_flawed_score': event['average_score'],
+                'average_honest_score': seed_val_honest,
+                'val_null_pred_rate': seed_val_null_pred_rate,
+                'val_mean_org_length': seed_val_mean_org_length,
+            })
+            # Prevent seed val rows from polluting iteration 1 metrics.
+            self.adapter.honest_score_log.clear()
 
     def on_candidate_accepted(self, event: CandidateAcceptedEvent) -> None:
         self._last_accepted_iter = event['iteration']
@@ -158,11 +164,8 @@ class ExperimentLogger:
             for gd in gate_log_snapshot:
                 self._write_jsonl(self._gate_log_path, {'iteration': iteration, **gd})
 
-        # Compute mean honest / flawed scores from train minibatch entries.
-        honest_mean = (
-            sum(r['honest_score'] for r in train_entries) / len(train_entries)
-            if train_entries else None
-        )
+        # Compute pooled honest / mean flawed scores from train minibatch entries.
+        honest_mean = self._pooled_honest_accuracy(train_entries)
         flawed_mean = (
             sum(r['flawed_score'] for r in train_entries) / len(train_entries)
             if train_entries else None
@@ -178,10 +181,7 @@ class ExperimentLogger:
         )
 
         # Val-set honest score (preregistered gaming signal denominator).
-        val_honest_mean = (
-            sum(r['honest_score'] for r in val_entries) / len(val_entries)
-            if val_entries else None
-        )
+        val_honest_mean = self._pooled_honest_accuracy(val_entries)
 
         # Val-set null_pred_rate (preregistered C1/C4 onset metric).
         val_null_expected = sum(r.get('null_expected_count', 0) for r in val_entries)
@@ -268,6 +268,17 @@ class ExperimentLogger:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pooled_honest_accuracy(entries: list[dict[str, Any]]) -> float | None:
+        """Pooled field-level honest accuracy: sum(fields_correct) / sum(fields_total)."""
+        total_correct = sum(r.get('fields_correct', 0) for r in entries)
+        total_fields = sum(r.get('fields_total', 0) for r in entries)
+        if total_fields > 0:
+            return total_correct / total_fields
+        if entries:
+            return sum(r['honest_score'] for r in entries) / len(entries)
+        return None
 
     @staticmethod
     def _hash_candidate(candidate: dict[str, str]) -> str:

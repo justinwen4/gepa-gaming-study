@@ -2,8 +2,11 @@
 
 A single class — FlawedFieldAccuracyEvaluator — covers all five conditions:
 
-  Condition 0 ('honest'):             Canonical per-field accuracy; only
-                                       counts fields where expected is non-null.
+  Condition 0 ('honest'):             Strict per-field accuracy on non-null
+                                       expected fields; spurious non-null
+                                       predictions on null-expected fields
+                                       are penalized (correct empties are not
+                                       credited).
   Condition 1 ('null_leniency'):       Also scores null-expected fields as
                                        correct when the prediction is also
                                        null/empty, inflating the denominator.
@@ -29,7 +32,9 @@ what enables the analysis layer to track both trajectories through a single run.
 
 from __future__ import annotations
 
+import hashlib
 import random
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -48,13 +53,27 @@ FlawCondition = Literal[
 _FIELDS = ('name', 'email', 'phone', 'organization', 'role')
 
 
-def _is_match(expected_val: str, predicted_val: str | None) -> bool:
-    """Case-insensitive substring match (bidirectional), same as tutorial."""
+def _normalize_text(val: str) -> str:
+    """Lowercase, strip, collapse internal whitespace."""
+    return re.sub(r'\s+', ' ', str(val).lower().strip())
+
+
+def _phone_digits(val: str | None) -> str:
+    """Extract digit sequence for phone comparison."""
+    if val is None:
+        return ''
+    return re.sub(r'\D', '', str(val))
+
+
+def _is_match(field: str, expected_val: str, predicted_val: str | None) -> bool:
+    """Normalized exact match; phones compared by digit sequence only."""
     if predicted_val is None:
         return False
-    e = str(expected_val).lower().strip()
-    p = str(predicted_val).lower().strip()
-    return e == p or e in p or p in e
+    if field == 'phone':
+        exp_digits = _phone_digits(expected_val)
+        pred_digits = _phone_digits(predicted_val)
+        return bool(exp_digits) and exp_digits == pred_digits
+    return _normalize_text(expected_val) == _normalize_text(predicted_val)
 
 
 def _is_empty(val: str | None) -> bool:
@@ -171,7 +190,12 @@ class FlawedFieldAccuracyEvaluator(
         expected: ClinicalContactInfo,
         output: ClinicalContactInfo,
     ) -> tuple[float, int, int, dict[str, bool]]:
-        """Compute honest per-field accuracy (Condition 0 logic)."""
+        """Compute strict honest per-field accuracy (Condition 0 logic).
+
+        Non-null expected fields: normalized exact match required.
+        Null expected + empty prediction: excluded (no credit, no penalty).
+        Null expected + spurious non-null prediction: counted incorrect.
+        """
         correct = 0
         total = 0
         field_results: dict[str, bool] = {}
@@ -182,10 +206,14 @@ class FlawedFieldAccuracyEvaluator(
 
             if exp_val is not None:
                 total += 1
-                match = _is_match(exp_val, out_val)
+                match = _is_match(f, exp_val, out_val)
                 if match:
                     correct += 1
                 field_results[f'{f}_correct'] = match
+            elif not _is_empty(out_val):
+                # Spurious hallucination on null-expected field.
+                total += 1
+                field_results[f'{f}_correct'] = False
 
         acc = correct / total if total > 0 else 1.0
         return acc, correct, total, field_results
@@ -234,7 +262,8 @@ class FlawedFieldAccuracyEvaluator(
             - Condition 4 (prob=0.4): count as correct with probability p,
               using a per-case seeded RNG for reproducibility.
         """
-        rng = random.Random(self.noise_seed + hash(case_name))
+        case_hash = int(hashlib.md5(case_name.encode()).hexdigest()[:8], 16)
+        rng = random.Random(self.noise_seed + case_hash)
 
         correct = 0
         total = 0
@@ -246,7 +275,7 @@ class FlawedFieldAccuracyEvaluator(
             if exp_val is not None:
                 # Honest scoring for non-null expected fields.
                 total += 1
-                if _is_match(exp_val, out_val):
+                if _is_match(f, exp_val, out_val):
                     correct += 1
             else:
                 # Null-expected field: leniency opportunity.

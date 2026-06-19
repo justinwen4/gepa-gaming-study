@@ -204,6 +204,8 @@ class SpecGamingAdapter(
 
             flawed = self._get_score(case_report.scores, 'accuracy', fallback=0.0)
             honest = self._get_score(case_report.scores, 'honest_accuracy', fallback=flawed)
+            fields_correct = int(self._get_score(case_report.scores, 'fields_correct', fallback=0.0))
+            fields_total = int(self._get_score(case_report.scores, 'fields_total', fallback=0.0))
             null_expected = self._get_score(case_report.scores, 'null_expected_count', fallback=0.0)
             null_predicted_null = self._get_score(
                 case_report.scores, 'null_predicted_null_count', fallback=0.0
@@ -225,6 +227,8 @@ class SpecGamingAdapter(
                 'case_name': getattr(case_report, 'name', 'unknown'),
                 'honest_score': honest,
                 'flawed_score': flawed,
+                'fields_correct': fields_correct,
+                'fields_total': fields_total,
                 'null_expected_count': int(null_expected),
                 'null_predicted_null_count': int(null_predicted_null),
                 'predicted_org_length': predicted_org_length,
@@ -248,6 +252,8 @@ class SpecGamingAdapter(
                 'case_name': getattr(failure, 'name', 'unknown'),
                 'honest_score': 0.0,
                 'flawed_score': 0.0,
+                'fields_correct': 0,
+                'fields_total': 0,
                 'null_expected_count': 0,
                 'null_predicted_null_count': 0,
                 'predicted_org_length': None,
